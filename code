@@ -1,0 +1,101 @@
+!pip install gradio
+!pip install diffusers
+!pip install transformers
+!pip install torch
+!pip install sentencepiece
+!pip install scipy
+!pip install ftfy
+import gradio as gr
+from diffusers import StableDiffusionPipeline
+import torch
+from transformers import MarianMTModel, MarianTokenizer, AutoModelForCausalLM, AutoTokenizer
+
+# Load the pre-trained Stable Diffusion model for text-to-image
+model_id = "CompVis/stable-diffusion-v1-4"
+pipe = StableDiffusionPipeline.from_pretrained(model_id)
+pipe = pipe.to("cuda")  # Use GPU if available
+
+# Load the MarianMT translation model
+translation_model_name = "Helsinki-NLP/opus-mt-en-de"  # English to German model
+tokenizer = MarianTokenizer.from_pretrained(translation_model_name)
+translation_model = MarianMTModel.from_pretrained(translation_model_name)
+
+# Load the chatbot model (DialoGPT small model)
+chatbot_model_name = "microsoft/DialoGPT-small"
+chatbot_tokenizer = AutoTokenizer.from_pretrained(chatbot_model_name)
+chatbot_model = AutoModelForCausalLM.from_pretrained(chatbot_model_name)
+
+# Text-to-image function
+def generate_image(prompt):
+    image = pipe(prompt).images[0]
+    return image
+
+# Text translation function
+def translate_text(text, src_lang, tgt_lang):
+    # Load the appropriate translation model based on selected languages
+    translation_model_name = f"Helsinki-NLP/opus-mt-{src_lang}-{tgt_lang}"
+    tokenizer = MarianTokenizer.from_pretrained(translation_model_name)
+    translation_model = MarianMTModel.from_pretrained(translation_model_name)
+
+    # Tokenize input text
+    inputs = tokenizer(text, return_tensors="pt", padding=True)
+
+    # Generate translation
+    translated = translation_model.generate(**inputs)
+
+    # Decode and return the translated text
+    translated_text = tokenizer.decode(translated[0], skip_special_tokens=True)
+    return translated_text
+
+# Chatbot function (using DialoGPT)
+chat_history = []  # To store the conversation history
+
+def chatbot_response(user_input):
+    global chat_history
+
+    # Tokenize user input
+    new_input_ids = chatbot_tokenizer.encode(user_input + chatbot_tokenizer.eos_token, return_tensors="pt")
+
+    # Append new user input to chat history
+    bot_input_ids = torch.cat([torch.tensor(chat_history), new_input_ids], dim=-1) if chat_history else new_input_ids
+
+    # Generate a response from the model
+    chat_history_ids = chatbot_model.generate(bot_input_ids, max_length=1000, pad_token_id=chatbot_tokenizer.eos_token_id)
+
+    # Decode the response
+    response = chatbot_tokenizer.decode(chat_history_ids[:, bot_input_ids.shape[-1]:][0], skip_special_tokens=True)
+
+    # Update chat history with the current conversation
+    chat_history.append(new_input_ids)
+
+    return response
+
+# Create Gradio interface
+with gr.Blocks() as interface:
+    gr.Markdown("# Text-to-Image, Text Translator, & Chatbot App")
+
+    with gr.Tab("Text-to-Image"):
+        with gr.Row():
+            text_input = gr.Textbox(label="Enter your prompt for Image Generation", lines=2, placeholder="A futuristic city skyline at sunset...")
+            image_output = gr.Image(label="Generated Image")
+        generate_button = gr.Button("Generate Image")
+        generate_button.click(fn=generate_image, inputs=text_input, outputs=image_output)
+
+    with gr.Tab("Text Translator"):
+        with gr.Row():
+            text_input_translate = gr.Textbox(label="Enter text to translate", placeholder="Type here...")
+            src_lang = gr.Dropdown(label="Source Language", choices=["en", "de", "fr", "es"], value="en")
+            tgt_lang = gr.Dropdown(label="Target Language", choices=["en", "de", "fr", "es"], value="de")
+            translated_text = gr.Textbox(label="Translated Text", lines=2)
+        translate_button = gr.Button("Translate Text")
+        translate_button.click(fn=translate_text, inputs=[text_input_translate, src_lang, tgt_lang], outputs=translated_text)
+
+    with gr.Tab("Chatbot"):
+        with gr.Row():
+            chatbot_input = gr.Textbox(label="Enter your message", placeholder="Chat with AI...")
+            chatbot_output = gr.Textbox(label="Bot's Response")
+        chat_button = gr.Button("Send Message")
+        chat_button.click(fn=chatbot_response, inputs=chatbot_input, outputs=chatbot_output)
+
+# Launch the Gradio app
+interface.launch(share=True)
